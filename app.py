@@ -1,13 +1,12 @@
 import io
 import re
 import operator
-from fastapi import FastAPI, File, UploadFile, HTTPException
+from flask import Flask, request, jsonify
 from PIL import Image, ImageOps
 import pytesseract
 
-app = FastAPI()
+app = Flask(__name__)
 
-# Supported basic math operations
 OPS = {
     '+': operator.add,
     '-': operator.sub,
@@ -16,42 +15,26 @@ OPS = {
     '/': operator.floordiv,
 }
 
-@app.post("/solve")
-async def solve_captcha(image: UploadFile = File(...)):
+@app.route("/solve", methods=["POST"])
+def solve_captcha():
+    if "image" not in request.files:
+        return jsonify({"error": "No image field provided"}), 400
+
     try:
-        # 1. Read uploaded image
-        contents = await image.read()
-        img = Image.open(io.BytesIO(contents)).convert("L")
-
-        # 2. Invert colors (white text on black background -> black text on white)
+        file = request.files["image"]
+        img = Image.open(io.BytesIO(file.read())).convert("L")
         img = ImageOps.invert(img)
-
-        # 3. Upscale 2x for sharper OCR recognition on small bitmap fonts
         img = img.resize((img.width * 2, img.height * 2), Image.Resampling.NEAREST)
 
-        # 4. Extract text via OCR
         extracted_text = pytesseract.image_to_string(img, config="--psm 6")
-
-        # 5. Find math expression pattern (e.g., "43+7=")
         match = re.search(r'(\d+)\s*([\+\-\*x\/])\s*(\d+)\s*=?', extracted_text)
+
         if not match:
-            raise HTTPException(
-                status_code=422, 
-                detail=f"Could not find a math expression. OCR read: {extracted_text.strip()}"
-            )
+            return jsonify({"error": "No math expression found", "ocr": extracted_text.strip()}), 422
 
-        num1 = int(match.group(1))
-        op_symbol = match.group(2)
-        num2 = int(match.group(3))
-
+        num1, op_symbol, num2 = int(match.group(1)), match.group(2), int(match.group(3))
         result = OPS[op_symbol](num1, num2)
 
-        return {
-            "expression": f"{num1}{op_symbol}{num2}",
-            "answer": result
-        }
-
-    except HTTPException:
-        raise
+        return jsonify({"expression": f"{num1}{op_symbol}{num2}", "answer": result})
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        return jsonify({"error": str(e)}), 500
